@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Tactical Strike</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a0a;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      font-family: 'Courier New', monospace;
+      overflow: hidden;
+    }
+
+    #game-container {
+      position: relative;
+    }
+
+    canvas {
+      display: block;
+      background: #1a1a1a;
+      border: 4px solid #333;
+      box-shadow: 0 0 30px rgba(0, 255, 0, 0.3);
+    }
+
+    #ui {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      right: 10px;
+      color: #0f0;
+      font-size: 14px;
+      text-shadow: 2px 2px #000;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    #instructions {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      right: 10px;
+      color: #888;
+      font-size: 11px;
+      text-align: center;
+      text-shadow: 1px 1px #000;
+    }
+
+    #game-over {
+      position: absolute;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      background: rgba(0,0,0,0.9);
+      color: #fff;
+    }
+
+    #game-over.visible { display: flex; }
+
+    #game-over h1 { 
+      font-size: 48px; 
+      margin-bottom: 10px;
+      color: #0f0;
+      text-shadow: 0 0 10px #0f0;
+    }
+
+    #game-over p {
+      font-size: 18px;
+      margin-bottom: 20px;
+      color: #888;
+    }
+
+    #restart-btn {
+      padding: 15px 40px;
+      font-size: 20px;
+      background: #0f0;
+      color: #000;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: bold;
+      transition: all 0.2s;
+    }
+
+    #restart-btn:hover {
+      background: #0ff;
+      box-shadow: 0 0 20px #0ff;
+    }
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="game"></canvas>
+    <div id="ui">
+      <div>PLAYER: <span id="player-score">0</span></div>
+      <div id="turn-indicator">YOUR TURN</div>
+      <div>CPU: <span id="cpu-score">0</span></div>
+    </div>
+    <div id="instructions">
+      Click your piece, then click where to move • Get ball into CPU's goal (top)
+    </div>
+    <div id="game-over">
+      <h1 id="result-text">VICTORY</h1>
+      <p id="final-message">You scored 5 goals!</p>
+      <button id="restart-btn">PLAY AGAIN</button>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    // Game dimensions
+    const GRID_SIZE = 8;
+    const CELL_SIZE = 50;
+    const GAME_WIDTH = GRID_SIZE * CELL_SIZE;
+    const GAME_HEIGHT = GRID_SIZE * CELL_SIZE;
+
+    canvas.width = GAME_WIDTH;
+    canvas.height = GAME_HEIGHT;
+
+    // Game state
+    let gameState = 'playing';
+    let playerScore = 0;
+    let cpuScore = 0;
+    let turn = 'player'; // 'player' or 'cpu'
+    let selectedPiece = null;
+    let validMoves = [];
+
+    // Ball
+    let ball = {
+      x: 3.5,
+      y: 3.5,
+      vx: 0,
+      vy: 0,
+      radius: 8
+    };
+
+    // Pieces - each has a movement pattern
+    const pieceTypes = {
+      rook: { name: 'ROOK', color: '#0f0', moves: [[0,1],[0,-1],[1,0],[-1,0]] },
+      bishop: { name: 'BISHOP', color: '#0ff', moves: [[1,1],[1,-1],[-1,1],[-1,-1]] },
+      knight: { name: 'KNIGHT', color: '#ff0', moves: [[2,1],[2,-1],[-2,1],[-2,-1],[1,2],[1,-2],[-1,2],[-1,-2]] }
+    };
+
+    let playerPieces = [
+      { type: 'rook', x: 1, y: 6 },
+      { type: 'bishop', x: 3, y: 6 },
+      { type: 'knight', x: 5, y: 6 }
+    ];
+
+    let cpuPieces = [
+      { type: 'rook', x: 1, y: 1 },
+      { type: 'bishop', x: 3, y: 1 },
+      { type: 'knight', x: 5, y: 1 }
+    ];
+
+    // Physics
+    const BALL_FRICTION = 0.95;
+    const BALL_MIN_SPEED = 0.05;
+    const KICK_FORCE = 3;
+
+    // Animation
+    let shakeAmount = 0;
+    let flashAlpha = 0;
+    let flashColor = '#fff';
+
+    // Input
+    canvas.addEventListener('click', handleClick);
+
+    function handleClick(e) {
+      if (gameState !== 'playing' || turn !== 'player') return;
+
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.floor((e.clientX - rect.left) / CELL_SIZE);
+      const y = Math.floor((e.clientY - rect.top) / CELL_SIZE);
+
+      if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return;
+
+      // Check if clicking on own piece
+      const clickedPiece = playerPieces.find(p => p.x === x && p.y === y);
+      
+      if (clickedPiece) {
+        selectedPiece = clickedPiece;
+        validMoves = getValidMoves(clickedPiece, playerPieces, cpuPieces);
+        return;
+      }
+
+      // Check if clicking valid move
+      if (selectedPiece && validMoves.some(m => m.x === x && m.y === y)) {
+        movePiece(selectedPiece, x, y);
+        selectedPiece = null;
+        validMoves = [];
+        
+        // Switch turn
+        setTimeout(() => {
+          turn = 'cpu';
+          updateTurnIndicator();
+          setTimeout(cpuTurn, 500);
+        }, 300);
+      }
+    }
+
+    function getValidMoves(piece, friendlyPieces, enemyPieces) {
+      const moves = [];
+      const type = pieceTypes[piece.type];
+      
+      for (const [dx, dy] of type.moves) {
+        const newX = piece.x + dx;
+        const newY = piece.y + dy;
+        
+        // Check bounds
+        if (newX < 0 || newX >= GRID_SIZE || newY < 0 || newY >= GRID_SIZE) continue;
+        
+        // Check friendly collision
+        if (friendlyPieces.some(p => p.x === newX && p.y === newY)) continue;
+        
+        // Check enemy collision (can't move through them)
+        if (enemyPieces.some(p => p.x === newX && p.y === newY)) continue;
+        
+        moves.push({ x: newX, y: newY });
+      }
+      
+      return moves;
+    }
+
+    function movePiece(piece, newX, newY) {
+      piece.x = newX;
+      piece.y = newY;
+      
+      // Check if piece hits ball
+      const dist = Math.sqrt(
+        Math.pow(ball.x - (newX + 0.5), 2) + 
+        Math.pow(ball.y - (newY + 0.5), 2)
+      );
+      
+      if (dist < 1.2) {
+        // Kick the ball
+        const angle = Math.atan2(ball.y - (newY + 0.5), ball.x - (newX + 0.5));
+        ball.vx = Math.cos(angle) * KICK_FORCE;
+        ball.vy = Math.sin(angle) * KICK_FORCE;
+        shake(8);
+      }
+    }
+
+    function cpuTurn() {
+      if (gameState !== 'playing') return;
+      
+      // Simple AI: Try to hit ball toward player's goal
+      let bestMove = null;
+      let bestScore = -Infinity;
+      
+      for (const piece of cpuPieces) {
+        const moves = getValidMoves(piece, cpuPieces, playerPieces);
+        
+        for (const move of moves) {
+          // Score based on distance to ball and moving ball toward goal
+          const distToBall = Math.sqrt(
+            Math.pow(ball.x - (move.x + 0.5), 2) + 
+            Math.pow(ball.y - (move.y + 0.5), 2)
+          );
+          
+          let score = -distToBall;
+          
+          // Prefer moves that get closer to ball
+          if (distToBall < 1.5) {
+            score += 10; // Can kick!
+            // Prefer kicking toward player's goal (bottom)
+            if (move.y > piece.y) score += 5;
+          }
+          
+          if (score > bestScore) {
+            bestScore = score;
+            bestMove = { piece, move };
+          }
+        }
+      }
+      
+      if (bestMove) {
+        movePiece(bestMove.piece, bestMove.move.x, bestMove.move.y);
+      }
+      
+      setTimeout(() => {
+        turn = 'player';
+        updateTurnIndicator();
+      }, 300);
+    }
+
+    function updatePhysics(dt) {
+      // Update ball
+      ball.x += ball.vx * dt * 10;
+      ball.y += ball.vy * dt * 10;
+      
+      ball.vx *= BALL_FRICTION;
+      ball.vy *= BALL_FRICTION;
+      
+      if (Math.abs(ball.vx) < BALL_MIN_SPEED) ball.vx = 0;
+      if (Math.abs(ball.vy) < BALL_MIN_SPEED) ball.vy = 0;
+      
+      // Wall collisions
+      if (ball.x - ball.radius / CELL_SIZE < 0) {
+        ball.x = ball.radius / CELL_SIZE;
+        ball.vx *= -0.8;
+        shake(3);
+      }
+      if (ball.x + ball.radius / CELL_SIZE > GRID_SIZE) {
+        ball.x = GRID_SIZE - ball.radius / CELL_SIZE;
+        ball.vx *= -0.8;
+        shake(3);
+      }
+      
+      // Check goals
+      if (ball.y - ball.radius / CELL_SIZE < 0) {
+        // CPU goal - player scores
+        cpuScore++;
+        updateScores();
+        resetBall();
+        flash('#0f0');
+        shake(15);
+        
+        if (cpuScore >= 5) {
+          endGame('cpu');
+        }
+      }
+      if (ball.y + ball.radius / CELL_SIZE > GRID_SIZE) {
+        // Player goal - CPU scores
+        playerScore++;
+        updateScores();
+        resetBall();
+        flash('#f00');
+        shake(15);
+        
+        if (playerScore >= 5) {
+          endGame('player');
+        }
+      }
+      
+      // Piece collisions
+      [...playerPieces, ...cpuPieces].forEach(piece => {
+        const px = piece.x + 0.5;
+        const py = piece.y + 0.5;
+        const dist = Math.sqrt(
+          Math.pow(ball.x - px, 2) + 
+          Math.pow(ball.y - py, 2)
+        );
+        
+        if (dist < 0.6) {
+          // Bounce off piece
+          const angle = Math.atan2(ball.y - py, ball.x - px);
+          ball.x = px + Math.cos(angle) * 0.6;
+          ball.y = py + Math.sin(angle) * 0.6;
+          ball.vx += Math.cos(angle) * 0.5;
+          ball.vy += Math.sin(angle) * 0.5;
+        }
+      });
+    }
+
+    function resetBall() {
+      ball.x = 3.5;
+      ball.y = 3.5;
+      ball.vx = 0;
+      ball.vy = 0;
+    }
+
+    function updateScores() {
+      document.getElementById('player-score').textContent = playerScore;
+      document.getElementById('cpu-score').textContent = cpuScore;
+    }
+
+    function updateTurnIndicator() {
+      const indicator = document.getElementById('turn-indicator');
+      indicator.textContent = turn === 'player' ? 'YOUR TURN' : 'CPU TURN';
+      indicator.style.color = turn === 'player' ? '#0f0' : '#f00';
+    }
+
+    function shake(intensity) {
+      shakeAmount = intensity;
+    }
+
+    function flash(color) {
+      flashColor = color;
+      flashAlpha = 0.5;
+    }
+
+    function endGame(winner) {
+      gameState = 'gameover';
+      const resultText = document.getElementById('result-text');
+      const finalMessage = document.getElementById('final-message');
+      
+      if (winner === 'player') {
+        resultText.textContent = 'VICTORY!';
+        resultText.style.color = '#0f0';
+        finalMessage.textContent = `You scored ${playerScore} goals!`;
+      } else {
+        resultText.textContent = 'DEFEAT';
+        resultText.style.color = '#f00';
+        finalMessage.textContent = `CPU scored ${cpuScore} goals first`;
+      }
+      
+      document.getElementById('game-over').classList.add('visible');
+    }
+
+    function restart() {
+      playerScore = 0;
+      cpuScore = 0;
+      turn = 'player';
+      gameState = 'playing';
+      selectedPiece = null;
+      validMoves = [];
+      
+      resetBall();
+      
+      playerPieces = [
+        { type: 'rook', x: 1, y: 6 },
+        { type: 'bishop', x: 3, y: 6 },
+        { type: 'knight', x: 5, y: 6 }
+      ];
+      
+      cpuPieces = [
+        { type: 'rook', x: 1, y: 1 },
+        { type: 'bishop', x: 3, y: 1 },
+        { type: 'knight', x: 5, y: 1 }
+      ];
+      
+      updateScores();
+      updateTurnIndicator();
+      document.getElementById('game-over').classList.remove('visible');
+    }
+
+    document.getElementById('restart-btn').addEventListener('click', restart);
+
+    // Rendering
+    function render() {
+      ctx.save();
+      
+      // Screen shake
+      if (shakeAmount > 0) {
+        ctx.translate(
+          (Math.random() - 0.5) * shakeAmount,
+          (Math.random() - 0.5) * shakeAmount
+        );
+        shakeAmount *= 0.9;
+        if (shakeAmount < 0.5) shakeAmount = 0;
+      }
+      
+      // Clear
+      ctx.fillStyle = '#1a1a1a';
+      ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+      
+      // Draw grid
+      ctx.strokeStyle = '#222';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= GRID_SIZE; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * CELL_SIZE, 0);
+        ctx.lineTo(i * CELL_SIZE, GAME_HEIGHT);
+        ctx.stroke();
+        
+        ctx.beginPath();
+        ctx.moveTo(0, i * CELL_SIZE);
+        ctx.lineTo(GAME_WIDTH, i * CELL_SIZE);
+        ctx.stroke();
+      }
+      
+      // Draw goals
+      ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
+      ctx.fillRect(0, 0, GAME_WIDTH, CELL_SIZE);
+      ctx.strokeStyle = '#f00';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(0, 0, GAME_WIDTH, CELL_SIZE);
+      
+      ctx.fillStyle = 'rgba(0, 255, 0, 0.2)';
+      ctx.fillRect(0, (GRID_SIZE - 1) * CELL_SIZE, GAME_WIDTH, CELL_SIZE);
+      ctx.strokeStyle = '#0f0';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(0, (GRID_SIZE - 1) * CELL_SIZE, GAME_WIDTH, CELL_SIZE);
+      
+      // Draw valid moves
+      if (selectedPiece && turn === 'player') {
+        validMoves.forEach(move => {
+          ctx.fillStyle = 'rgba(0, 255, 0, 0.3)';
+          ctx.fillRect(move.x * CELL_SIZE, move.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+          
+          ctx.strokeStyle = '#0f0';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(move.x * CELL_SIZE, move.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+        });
+      }
+      
+      // Draw pieces
+      function drawPiece(piece, color) {
+        const cx = (piece.x + 0.5) * CELL_SIZE;
+        const cy = (piece.y + 0.5) * CELL_SIZE;
+        const size = 15;
+        
+        // Piece shape based on type
+        ctx.fillStyle = color;
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 2;
+        
+        if (piece.type === 'rook') {
+          ctx.fillRect(cx - size, cy - size, size * 2, size * 2);
+          ctx.strokeRect(cx - size, cy - size, size * 2, size * 2);
+        } else if (piece.type === 'bishop') {
+          ctx.beginPath();
+          ctx.arc(cx, cy, size, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        } else if (piece.type === 'knight') {
+          ctx.beginPath();
+          ctx.moveTo(cx, cy - size);
+          ctx.lineTo(cx + size, cy + size);
+          ctx.lineTo(cx - size, cy + size);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        }
+        
+        // Highlight selected
+        if (piece === selectedPiece) {
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(cx, cy, size + 5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+      
+      playerPieces.forEach(p => drawPiece(p, pieceTypes[p.type].color));
+      cpuPieces.forEach(p => drawPiece(p, '#f00'));
+      
+      // Draw ball
+      const ballX = ball.x * CELL_SIZE;
+      const ballY = ball.y * CELL_SIZE;
+      
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(ballX, ballY, ball.radius, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.strokeStyle = '#888';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      
+      // Flash effect
+      if (flashAlpha > 0) {
+        ctx.fillStyle = flashColor;
+        ctx.globalAlpha = flashAlpha;
+        ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+        ctx.globalAlpha = 1;
+        flashAlpha -= 0.02;
+      }
+      
+      ctx.restore();
+    }
+
+    // Game loop
+    let lastTime = 0;
+    function gameLoop(timestamp) {
+      const deltaTime = (timestamp - lastTime) / 1000;
+      lastTime = timestamp;
+      
+      if (gameState === 'playing') {
+        updatePhysics(deltaTime);
+      }
+      
+      render();
+      requestAnimationFrame(gameLoop);
+    }
+
+    // Start
+    updateScores();
+    updateTurnIndicator();
+    requestAnimationFrame(gameLoop);
+  </script>
+</body>
+</html>
